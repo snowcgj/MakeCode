@@ -19,6 +19,8 @@ class StreamRenderer:
         self.update_interval = update_interval
         self.tail_update_interval = 0.3
         self._last_tail_update_at: dict[TuiRegion, float] = {}
+        # 最近一次投递给 UI 的尾部文本（"" 表示已隐藏）；用来跳过与 UI 当前内容相同的重复投递。
+        self._tail_texts: dict[TuiRegion, str] = {}
         self._active_regions: set[TuiRegion] = set()
 
     async def render_text_stream_async(
@@ -34,6 +36,7 @@ class StreamRenderer:
         tool_calls = []
         raw_message = None
 
+        self._tail_texts.clear()
         if set_active:
             self._set_active(region, True)
         try:
@@ -81,6 +84,7 @@ class StreamRenderer:
             stream_generator: AsyncIterator[dict],
             agent_name: str = "Orchestrator",
     ) -> Tuple[str, List, Any]:
+        self._tail_texts.clear()
         self._print_header(agent_name)
         start_time = time.perf_counter()
 
@@ -258,10 +262,15 @@ class StreamRenderer:
         if complete_blocks is None:
             return current_buffer, ""
 
-        self._clear_tail(region)
+        # 提交的段落与新的尾部放进同一个事件，UI 线程一次处理完，
+        # 不再“先清尾部、再挂载、再显示尾部”造成多次布局失效。
+        tail_text = remaining_buffer if remaining_buffer.strip() else ""
+        self._tail_texts[self._tail_slot(region)] = tail_text
+        self._last_tail_update_at[region] = time.perf_counter()
         post_tui(
             region,
             self._region_markdown(region, complete_blocks, copy_text=f"{complete_blocks}\n\n"),
+            tail_after=Text(tail_text) if tail_text else "",
         )
         return remaining_buffer, f"{complete_blocks}\n\n"
 
@@ -283,17 +292,28 @@ class StreamRenderer:
                 return complete_blocks, remaining_buffer
             search_from = split_at
 
+    @staticmethod
+    def _tail_slot(region: TuiRegion) -> TuiRegion:
+        """CONTENT 与 REASONING 共用同一个 UI 尾部控件，跳过重复投递的记录也必须共用。"""
+        return TuiRegion.CONTENT if region == TuiRegion.REASONING else region
+
     def _update_tail(self, buffer: str, region: TuiRegion = TuiRegion.CONTENT, force: bool = False):
+        tail_text = buffer if buffer.strip() else ""
+        slot = self._tail_slot(region)
+        if self._tail_texts.get(slot) == tail_text:
+            return
         if not force:
             now = time.perf_counter()
             last_update = self._last_tail_update_at.get(region)
             if last_update is not None and now - last_update < self.tail_update_interval:
                 return
             self._last_tail_update_at[region] = now
-        post_tui(region, Text(buffer) if buffer.strip() else "", tail=True)
+        self._tail_texts[slot] = tail_text
+        post_tui(region, Text(tail_text) if tail_text else "", tail=True)
 
     def _clear_tail(self, region: TuiRegion = TuiRegion.CONTENT):
         self._last_tail_update_at.pop(region, None)
+        self._tail_texts[self._tail_slot(region)] = ""
         post_tui(region, "", tail=True)
 
     def _set_active(self, region: TuiRegion, active: bool):

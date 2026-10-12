@@ -27,6 +27,9 @@ class TuiEvent:
     collapsible_open: bool = False
     collapsible_close: bool = False
     collapsible_kind: str = "reasoning"
+    # 内容块事件处理完后同步设置的尾部内容：None 表示不动尾部，"" 表示隐藏尾部。
+    # 让“提交段落 + 更新尾部”在 UI 线程一次完成，避免先清尾部、再挂载、再显示尾部的多次布局失效。
+    tail_after: Any = None
 
 
 LAYOUT_CONFIG_FILE = paths.layout_config_file()

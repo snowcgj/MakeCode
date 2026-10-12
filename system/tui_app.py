@@ -3,8 +3,10 @@ import os
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable
 from concurrent.futures import Future
+from contextlib import AbstractContextManager
 from datetime import datetime
 from pathlib import Path
 from queue import Queue
@@ -66,11 +68,27 @@ COMPACT_WIDTH = 140
 CUSTOM_CONVERSATION_TITLE_PREFIX = "\x00makecode-custom-title:"
 
 
+def _log_bridge_error(exc: Exception) -> None:
+    try:
+        from init import log_error_traceback
+
+        log_error_traceback("TuiBridge queued event", exc)
+    except Exception:
+        pass
+
+
 class TuiBridge:
+    # 单次 drain 占用 UI 线程的时间上限：超出后让出事件循环（输入、重绘），剩余事件稍后继续处理。
+    _DRAIN_TIME_SLICE = 0.008
+
     def __init__(self) -> None:
         self._app: MakeCodeTuiApp | None = None
         self._app_thread_id: int | None = None
         self._pending: Queue[TuiEvent] = Queue()
+        self._event_queue: deque[TuiEvent] = deque()
+        self._event_queue_lock = threading.Lock()
+        self._drain_scheduled = False
+        self._draining = False
         self._app_lock = threading.Lock()
         self._client_request_lock = threading.Lock()
         self._client_request_count = 0
@@ -96,8 +114,10 @@ class TuiBridge:
             pending: list[TuiEvent] = []
             while not self._pending.empty():
                 pending.append(self._pending.get())
+        # bind 之前投递的事件都比队列里的事件更早：直接按序处理。不能先 drain 队列（会让后入队的事件插队），
+        # 也不能清空队列（绑定期间其他线程已入队的事件会丢失）。
         for event in pending:
-            self._dispatch_event_locked(app, event)
+            self._handle_event_on_app_thread(app, event)
         self._sync_client_request_state(app)
 
     def unbind(self, app: "MakeCodeTuiApp") -> None:
@@ -105,6 +125,7 @@ class TuiBridge:
             if self._app is app:
                 self._app = None
                 self._app_thread_id = None
+        self._reset_event_queue()
 
     def post(
         self,
@@ -118,6 +139,7 @@ class TuiBridge:
         collapsible_open: bool = False,
         collapsible_close: bool = False,
         collapsible_kind: str = "reasoning",
+        tail_after: Any = None,
     ) -> None:
         event = TuiEvent(
             TuiRegion(region),
@@ -129,6 +151,7 @@ class TuiBridge:
             collapsible_open,
             collapsible_close,
             collapsible_kind,
+            tail_after,
         )
         with self._app_lock:
             app = self._app
@@ -402,12 +425,92 @@ class TuiBridge:
         self._dispatch_event(app, event)
 
     def _dispatch_event(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
-        if self._is_app_thread():
-            self._handle_event_on_app_thread(app, event)
-        else:
-            # 不得在工作线程持有 region 锁的同时阻塞等待 app 线程回调，
-            # 否则 app 线程（如 bind 重放 pending 事件）获取同一把锁时会死锁。
-            app.call_from_thread(self._handle_event_on_app_thread, app, event)
+        if not self._is_app_thread():
+            # 工作线程只入队、不等待 UI：UI 线程每次回调批量处理多个事件，
+            # 同一帧内的多次布局失效合并成一次重排，生产者也不再被 UI 延迟拖慢。
+            self._enqueue_event(app, event)
+            return
+        if self._draining:
+            # 事件处理过程中又投递了事件：排到队尾由正在进行的 drain 按序处理，不能重入。
+            with self._event_queue_lock:
+                self._event_queue.append(event)
+            return
+        # 保持全局顺序：先处理完此前入队的事件，再处理本事件。
+        self.drain_pending_events(app)
+        self._handle_event_on_app_thread(app, event)
+
+    def _reset_event_queue(self) -> None:
+        with self._event_queue_lock:
+            self._event_queue.clear()
+            self._drain_scheduled = False
+
+    @staticmethod
+    def _is_plain_event(event: TuiEvent) -> bool:
+        return (
+            not event.clear
+            and event.active is None
+            and event.collapsible_title is None
+            and not event.collapsible_open
+            and not event.collapsible_close
+            and event.tail_after is None
+        )
+
+    @classmethod
+    def _supersedes(cls, previous: TuiEvent, event: TuiEvent) -> bool:
+        """队尾同区域的 tail / STATUS / RUNTIME_INFO 事件都是“设置为最新值”的幂等更新，后者直接覆盖前者。"""
+        if previous.region != event.region or not cls._is_plain_event(previous) or not cls._is_plain_event(event):
+            return False
+        if event.region in (TuiRegion.STATUS, TuiRegion.RUNTIME_INFO):
+            return not previous.tail and not event.tail
+        return previous.tail and event.tail
+
+    def _enqueue_event(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
+        with self._event_queue_lock:
+            queue = self._event_queue
+            if queue and self._supersedes(queue[-1], event):
+                queue[-1] = event
+            else:
+                queue.append(event)
+            schedule = not self._drain_scheduled
+            self._drain_scheduled = True
+        if schedule and not app.call_later(self._drain_scheduled_events, app):
+            # App 正在退出，无法再调度：丢弃尚未处理的事件。
+            self._reset_event_queue()
+
+    def _drain_scheduled_events(self, app: "MakeCodeTuiApp") -> None:
+        with self._event_queue_lock:
+            self._drain_scheduled = False
+        self.drain_pending_events(app, time_budget=self._DRAIN_TIME_SLICE)
+
+    def drain_pending_events(self, app: "MakeCodeTuiApp", time_budget: float | None = None) -> None:
+        """在 UI 线程按入队顺序处理已排队的事件；给定 time_budget 时超时后让出并重新调度。"""
+        if self._draining or self._app is not app:
+            return
+        self._draining = True
+        deadline = None if time_budget is None else time.perf_counter() + time_budget
+        try:
+            while True:
+                with self._event_queue_lock:
+                    if not self._event_queue:
+                        return
+                    event = self._event_queue.popleft()
+                try:
+                    self._handle_event_on_app_thread(app, event)
+                except Exception as exc:  # 单个事件渲染失败不应中断其后的事件
+                    _log_bridge_error(exc)
+                if deadline is not None and time.perf_counter() >= deadline:
+                    self._reschedule_drain(app)
+                    return
+        finally:
+            self._draining = False
+
+    def _reschedule_drain(self, app: "MakeCodeTuiApp") -> None:
+        with self._event_queue_lock:
+            if not self._event_queue or self._drain_scheduled:
+                return
+            self._drain_scheduled = True
+        if not app.call_later(self._drain_scheduled_events, app):
+            self._reset_event_queue()
 
     def _handle_event_on_app_thread(self, app: "MakeCodeTuiApp", event: TuiEvent) -> None:
         with self._region_locks[event.region]:
@@ -1245,6 +1348,7 @@ class MakeCodeTuiApp(App[None]):
         self._batch_scroll_regions: set[TuiRegion] = set()
         self._batch_force_scroll = False
         self._batch_runtime_dirty = False
+        self._batch_update: AbstractContextManager[None] | None = None
         self._quick_panel_expanded = True
         self.title = "MakeCode"
         self.sub_title = "🎬 Act · Ready"
@@ -1470,6 +1574,14 @@ class MakeCodeTuiApp(App[None]):
     def on_unmount(self) -> None:
         TUI_BRIDGE.unbind(self)
 
+    def call_from_thread(self, callback: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
+        # 跨线程调用先在 UI 线程处理完已入队的事件，使调用与此前投递的事件保持原有的先后顺序。
+        return super().call_from_thread(self._call_after_queued_events, callback, args, kwargs)
+
+    def _call_after_queued_events(self, callback: Callable[..., Any], args: tuple, kwargs: dict) -> Any:
+        TUI_BRIDGE.drain_pending_events(self)
+        return callback(*args, **kwargs)
+
     def flush_screen(self) -> None:
         self.refresh(repaint=True, layout=True)
         self._driver.write("\x1b[0m\x1b[2J\x1b[H")
@@ -1489,7 +1601,12 @@ class MakeCodeTuiApp(App[None]):
             mapped_pane is pane and self._pane_active_counts.get(mapped_region, 0) > 0
             for mapped_region, mapped_pane in self._panes.items()
         )
-        pane.set_class(pane_is_active, "pane-active")
+        if pane.has_class("pane-active") == pane_is_active:
+            return
+        # .pane-active 只改面板自身的边框。pane.set_class() 默认会让 Textual 同步重算整棵子树的样式，
+        # Content 面板有上千个控件时单次要数百毫秒，所以这里只对面板节点本身应用样式。
+        pane.set_class(pane_is_active, "pane-active", update=False)
+        self.stylesheet.update_nodes((pane,), animate=True)
 
     def _update_tail(self, region: TuiRegion, payload: Any) -> bool:
         tail = self._tails.get(region)
@@ -1498,11 +1615,30 @@ class MakeCodeTuiApp(App[None]):
         if payload is None:
             payload = ""
         visible = payload != ""
-        if tail.content == payload and tail.has_class("pane-tail-visible") == visible:
+        was_visible = tail.has_class("pane-tail-visible")
+        if tail.content == payload and was_visible == visible:
             return False
-        tail.update(payload)
+        # 显隐变化必须重新布局（隐藏时顺带清掉撑高的最小高度）。已显示的尾部只在内容变高、放不下时
+        # 才撑高并重新布局，变矮不缩回；否则只重绘，避免每次刷新尾部都让整个 Content 面板（上千个控件）重排。
+        tail.update(payload, layout=not (visible and was_visible))
+        if not visible:
+            tail.styles.min_height = None
+        elif was_visible:
+            self._grow_tail_to_fit(tail)
         tail.set_class(visible, "pane-tail-visible")
         return True
+
+    def _grow_tail_to_fit(self, tail: Static) -> None:
+        width = tail.size.width
+        if not width:
+            tail.refresh(layout=True)
+            return
+        height = tail.visual.get_height(tail.styles, width)
+        max_height = tail.styles.max_height
+        if max_height is not None and max_height.is_cells:
+            height = min(height, int(max_height.value))
+        if height > tail.size.height:
+            tail.styles.min_height = height
 
     def _is_log_at_bottom(self, log: RichLog) -> bool:
         return bool(log.is_vertical_scroll_end or log.scroll_y >= log.max_scroll_y - 1)
@@ -1530,7 +1666,8 @@ class MakeCodeTuiApp(App[None]):
     def _defer_or_scroll_now(self, region: TuiRegion, scroller: Widget | None) -> None:
         if scroller is None:
             return
-        if self._batch_render_depth > 0 and not self._batch_force_scroll:
+        if self._batch_render_depth > 0:
+            # 批次内不逐事件排队“刷新后滚到底部”：结束时统一滚动一次（强制批次滚动所有面板）。
             self._batch_scroll_regions.add(region)
         else:
             self._scroll_log_end_after_refresh(scroller)
@@ -1542,6 +1679,10 @@ class MakeCodeTuiApp(App[None]):
             self._scroll_log_end_after_refresh(log)
 
     def begin_batch_render(self, force_scroll: bool = False) -> None:
+        if self._batch_render_depth == 0:
+            # 批次内挂起重绘与布局：整段回放只在批次结束后重排一次，而不是每个事件各排一次。
+            self._batch_update = self.batch_update()
+            self._batch_update.__enter__()
         self._batch_render_depth += 1
         self._batch_force_scroll = self._batch_force_scroll or force_scroll
 
@@ -1551,18 +1692,24 @@ class MakeCodeTuiApp(App[None]):
         self._batch_render_depth -= 1
         if self._batch_render_depth > 0:
             return
-        if self._batch_force_scroll:
-            self.scroll_all_panes_to_bottom()
-        else:
-            for region in self._batch_scroll_regions:
-                scroller = self._region_scroller(region)
-                if scroller is not None:
-                    self._scroll_log_end_after_refresh(scroller)
-        self._batch_scroll_regions.clear()
-        self._batch_force_scroll = False
-        if self._batch_runtime_dirty:
-            self._update_runtime_info()
-            self._batch_runtime_dirty = False
+        try:
+            if self._batch_force_scroll:
+                self.scroll_all_panes_to_bottom()
+            else:
+                for region in self._batch_scroll_regions:
+                    scroller = self._region_scroller(region)
+                    if scroller is not None:
+                        self._scroll_log_end_after_refresh(scroller)
+            self._batch_scroll_regions.clear()
+            self._batch_force_scroll = False
+            if self._batch_runtime_dirty:
+                self._update_runtime_info()
+                self._batch_runtime_dirty = False
+        finally:
+            # 无论收尾是否出错都必须恢复重绘，否则界面会一直停在批次开始时的画面。
+            batch_update, self._batch_update = self._batch_update, None
+            if batch_update is not None:
+                batch_update.__exit__(None, None, None)
 
     def _mark_runtime_dirty(self) -> None:
         if self._batch_render_depth > 0:
@@ -1584,18 +1731,11 @@ class MakeCodeTuiApp(App[None]):
                 runtime_info.update(value, layout=False)
             return
 
-        scroller = self._region_scroller(event.region)
         log = self._logs.get(event.region)
         if event.active is not None:
             self._set_pane_active(event.region, event.active)
         if event.tail:
-            if log is not None:
-                should_scroll_end = self._batch_force_scroll or self._is_log_at_bottom(log)
-            else:
-                should_scroll_end = self._batch_force_scroll or (scroller is not None and self._is_scroller_at_bottom(scroller))
-            tail_changed = self._update_tail(event.region, event.payload)
-            if tail_changed and should_scroll_end:
-                self._defer_or_scroll_now(event.region, scroller)
+            self._set_tail(event.region, event.payload)
             return
         if event.clear:
             if event.region in {TuiRegion.CONTENT, TuiRegion.REASONING}:
@@ -1616,6 +1756,8 @@ class MakeCodeTuiApp(App[None]):
             return
         if event.region in {TuiRegion.CONTENT, TuiRegion.REASONING}:
             self._handle_content_block_event(event)
+            if event.tail_after is not None:
+                self._set_tail(event.region, event.tail_after)
             return
         if event.payload is not None and event.region in {TuiRegion.TASK, TuiRegion.BACKGROUND, TuiRegion.SUB_AGENT}:
             should_scroll_end = self._batch_force_scroll or self._is_log_at_bottom(log)
@@ -1627,7 +1769,20 @@ class MakeCodeTuiApp(App[None]):
                 self._defer_or_scroll_now(event.region, log)
         elif event.payload is not None:
             log.write(event.payload)
+        if event.tail_after is not None:
+            self._set_tail(event.region, event.tail_after)
         self._mark_runtime_dirty()
+
+    def _set_tail(self, region: TuiRegion, payload: Any) -> None:
+        scroller = self._region_scroller(region)
+        log = self._logs.get(region)
+        if log is not None:
+            should_scroll_end = self._batch_force_scroll or self._is_log_at_bottom(log)
+        else:
+            should_scroll_end = self._batch_force_scroll or (scroller is not None and self._is_scroller_at_bottom(scroller))
+        tail_changed = self._update_tail(region, payload)
+        if tail_changed and should_scroll_end:
+            self._defer_or_scroll_now(region, scroller)
 
     def _content_block_renderable(self, payload: Any) -> RenderableType:
         if not isinstance(payload, str):
@@ -2821,6 +2976,7 @@ def post_tui(
     collapsible_open: bool = False,
     collapsible_close: bool = False,
     collapsible_kind: str = "reasoning",
+    tail_after: RenderableType | str | None = None,
 ) -> None:
     TUI_BRIDGE.post(
         region,
@@ -2832,6 +2988,7 @@ def post_tui(
         collapsible_open=collapsible_open,
         collapsible_close=collapsible_close,
         collapsible_kind=collapsible_kind,
+        tail_after=tail_after,
     )
 
 

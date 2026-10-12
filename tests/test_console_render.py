@@ -329,3 +329,66 @@ async def test_stream_renderer_posts_reasoning_status_only_once_per_response():
         if call.args[0] == TuiRegion.STATUS
     ]
     assert statuses.count("Orchestrator reasoning") == 2
+
+
+def _record_stream_events(events):
+    return patch(
+        "system.stream_render.post_tui",
+        side_effect=lambda region, payload=None, **kwargs: events.append((region, payload, kwargs)),
+    )
+
+
+def test_committed_paragraph_carries_the_remaining_tail_in_a_single_event():
+    renderer = StreamRenderer()
+    events = []
+
+    with _record_stream_events(events):
+        remaining, emitted = renderer._process_block_commit("第一段\n\n第二段尾巴", "第一段\n\n第二段尾巴")
+        renderer._update_tail(remaining, force=True)
+
+    assert (remaining, emitted) == ("第二段尾巴", "第一段\n\n")
+    assert len(events) == 1  # 不再先清尾部；提交后的强制刷新也不重复投递相同尾部
+    region, payload, kwargs = events[0]
+    assert region == TuiRegion.CONTENT
+    assert payload.copy_text == "第一段\n\n"
+    assert kwargs["tail_after"].plain == "第二段尾巴"
+    assert not kwargs.get("tail")
+
+
+def test_update_tail_skips_text_the_ui_already_shows_until_the_tail_is_cleared():
+    renderer = StreamRenderer()
+    events = []
+
+    with _record_stream_events(events):
+        renderer._update_tail("同一段尾巴", force=True)
+        renderer._update_tail("同一段尾巴", force=True)
+        renderer._clear_tail()
+        renderer._update_tail("同一段尾巴", force=True)
+
+    tails = [getattr(payload, "plain", payload) for _, payload, kwargs in events if kwargs.get("tail")]
+    assert tails == ["同一段尾巴", "", "同一段尾巴"]
+
+
+def test_content_and_reasoning_share_one_tail_slot_for_skipping_duplicates():
+    renderer = StreamRenderer()
+    events = []
+
+    with _record_stream_events(events):
+        renderer._update_tail("正文尾巴", region=TuiRegion.CONTENT, force=True)
+        renderer._update_tail("思考尾巴", region=TuiRegion.REASONING, force=True)
+        # 两个区域共用同一个 UI 尾部控件：此时控件里是“思考尾巴”，正文尾巴必须重新投递
+        renderer._update_tail("正文尾巴", region=TuiRegion.CONTENT, force=True)
+
+    assert [getattr(payload, "plain", payload) for _, payload, _ in events] == ["正文尾巴", "思考尾巴", "正文尾巴"]
+
+
+def test_commit_marks_the_tail_as_just_updated_for_throttling():
+    renderer = StreamRenderer()
+    events = []
+
+    with _record_stream_events(events):
+        remaining, _ = renderer._process_block_commit("第一段\n\n第二段尾巴", "第一段\n\n第二段尾巴")
+        renderer._update_tail(remaining + "继续", force=False)  # 刚随提交更新过尾部，0.3 秒内不再刷新
+        renderer._update_tail(remaining + "继续", force=True)
+
+    assert [bool(kwargs.get("tail")) for _, _, kwargs in events] == [False, True]
