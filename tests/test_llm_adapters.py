@@ -2466,7 +2466,7 @@ async def test_auxiliary_tool_loops_use_real_protocol_adapters(operation, auxili
     second = json.dumps(gateway.requests[1])
     assert "extra_forbidden" in second
     assert "private-image" not in second
-    assert {body["model"] for body in gateway.requests} == ({"recall"} if operation == "recall" else {"main"})
+    assert {body["model"] for body in gateway.requests} == ({"main"} if operation == "title" else {"recall"})
 
 
 @pytest.fixture
@@ -2511,6 +2511,7 @@ async def test_compaction_and_memory_extraction_use_real_adapters(mode, auxiliar
     assert "file output" in summary_wire and "file output" in memory_wire
     for marker in ("private-image", "private-system-marker", "private-reasoning-marker", "private-native-marker"):
         assert marker not in summary_wire and marker not in memory_wire
+    assert {body["model"] for body in gateway.requests} == {"recall"}
     assert_auxiliary_tool_continuation(*gateway.requests[1:3])
 
 
@@ -2600,7 +2601,7 @@ async def test_auxiliary_model_factories_fall_back_to_current_protocol(auxiliary
     gateway.manager.get_memory_recall_model.return_value = None
     monkeypatch.setattr(llm_client, "get_understand_image_model", lambda: None)
     gateway.replies.extend([{"text": "recall fallback"}, {"text": "vision fallback"}])
-    clients = [llm_client.create_memory_recall_llm_client(), llm_client.create_image_understanding_llm_client()]
+    clients = [llm_client.create_memory_management_llm_client(), llm_client.create_image_understanding_llm_client()]
     try:
         assert clients[0] is not clients[1]
         for client in clients:

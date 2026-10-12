@@ -209,7 +209,7 @@ Team 模块支持：
 - `/memory-list`：列出当前 active 长期记忆。
 - `/memory-panel`：打开长期记忆面板，可查看/复制/管理记忆。
 - `/memory-delete`：按 ID 删除一条或多条长期记忆。
-- `/memory-config`：打开记忆配置面板，可修改全局上下文长度、`memory_size`、`keep_recent_tool_call`、召回窗口和召回模型。
+- `/memory-config`：打开记忆配置面板，可修改全局上下文长度、`memory_size`、`keep_recent_tool_call`、召回窗口和记忆管理模型。
 - `/memory-update [prompt]`：根据用户提供的请求主动新增、修正或清理长期记忆；prompt 可选，省略时基于当前转录自动推断。
 
 #### 流式摘要生成
@@ -857,7 +857,7 @@ MakeCode.exe --mcp-add fs -- npx -y @modelcontextprotocol/server-filesystem .
 | `/memory-list`       | 列出当前 active 长期记忆                                                |
 | `/memory-panel`      | 打开长期记忆面板（按 `updated_at` 升序展示）                            |
 | `/memory-delete`     | 按 ID 删除一条或多条长期记忆                                            |
-| `/memory-config`     | 打开记忆配置面板，修改全局上下文长度、记忆大小、保留工具调用数、召回窗口和召回模型          |
+| `/memory-config`     | 打开记忆配置面板，修改全局上下文长度、记忆大小、保留工具调用数、召回窗口和记忆管理模型          |
 | `/memory-update [prompt]` | 主动新增/修正/清理长期记忆，prompt 可选                              |
 | `/hitl`               | 切换 Human-in-the-Loop 拦截状态 (开启/关闭)                               |
 | `/sub-agent-console`  | 切换 Sub-Agent 的控制台输出状态，默认关闭                                      |

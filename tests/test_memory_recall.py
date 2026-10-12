@@ -246,7 +246,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         ])
 
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_recall_llm_client", return_value=fake_client):
+                patch.object(memory, "create_memory_management_llm_client", return_value=fake_client):
             selected = await memory.select_relevant_memory_ids("需要处理新约定", max_iterations=3)
 
         self.assertEqual(selected, ["mem_new", "mem_old"])
@@ -273,7 +273,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         ])
 
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_recall_llm_client", return_value=fake_client):
+                patch.object(memory, "create_memory_management_llm_client", return_value=fake_client):
             selected = await memory.select_relevant_memory_ids("query", max_iterations=2)
 
         self.assertEqual(selected, ["mem_new"])
@@ -294,7 +294,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
         ]])
 
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_recall_llm_client", return_value=fake_client):
+                patch.object(memory, "create_memory_management_llm_client", return_value=fake_client):
             with self.assertRaisesRegex(memory.ToolArgumentValidationError, "unexpected"):
                 await memory.select_relevant_memory_ids("query", max_iterations=1)
 
@@ -337,7 +337,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         fake_client = PauseRecallClient()
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_recall_llm_client", return_value=fake_client):
+                patch.object(memory, "create_memory_management_llm_client", return_value=fake_client):
             selected = await memory.select_relevant_memory_ids("query", max_iterations=2)
 
         self.assertEqual(selected, ["mem_new"])
@@ -372,7 +372,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "assistant", "content": None, "stop_reason": "tool_use"},
             ),
         ]
-        with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+        with patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
                 patch.object(memory, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
                 patch.object(memory.StreamRenderer, "render_text_stream_async", new_callable=AsyncMock, side_effect=stream_results), \
                  patch.object(memory, "post_tui"), \
@@ -410,7 +410,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             "content": output,
         }
 
-        with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+        with patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
                 patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
                 patch.object(
                     memory.StreamRenderer,
@@ -461,7 +461,7 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
             "content": output,
         }
 
-        with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+        with patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
                 patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
                 patch.object(
                     memory.StreamRenderer,
@@ -526,11 +526,11 @@ class MemoryRecallTests(unittest.IsolatedAsyncioTestCase):
 
         memory._MEMORY_RECALL_WINDOWS = {}
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_recall_llm_client", return_value=selected_client):
+                patch.object(memory, "create_memory_management_llm_client", return_value=selected_client):
             selected = await memory.select_relevant_memory_ids("query", agent_id="agent_a")
 
         with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-                patch.object(memory, "create_memory_recall_llm_client", return_value=empty_client):
+                patch.object(memory, "create_memory_management_llm_client", return_value=empty_client):
             empty = await memory.select_relevant_memory_ids("query", agent_id="agent_b")
 
         self.assertEqual(selected, ["mem_new"])

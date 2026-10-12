@@ -23,8 +23,7 @@ from system.tui_app import TuiRegion, post_tui
 from utils.memory_catalog import read_memory_records, sort_memory_records
 from utils.llm_client import (
     close_async_llm_client,
-    create_current_async_llm_client,
-    create_memory_recall_llm_client,
+    create_memory_management_llm_client,
     strip_native_message_payloads,
 )
 from utils.vision import strip_images_in_place, text_only_messages
@@ -801,7 +800,7 @@ async def select_relevant_memory_ids(
         return []
 
     messages = _get_memory_recall_messages(query, candidates, previous_assistant_content)
-    recall_client = create_memory_recall_llm_client()
+    recall_client = create_memory_management_llm_client()
     if recall_client is None:
         raise RuntimeError("No model configured. Please use /models to configure a model first.")
     try:
@@ -931,7 +930,7 @@ async def memory_agent_loop(
         max_iterations: int = MEMORY_AGENT_MAX_ITERATIONS,
         raise_on_error: bool = False,
 ) -> list[dict]:
-    llm_client = create_current_async_llm_client()
+    llm_client = create_memory_management_llm_client()
     if llm_client is None:
         raise RuntimeError("No model configured. Please use /models to configure a model first.")
     post_tui(TuiRegion.BACKGROUND, active=True)
@@ -1524,7 +1523,7 @@ async def _summarize_messages(
     _compact_console.rule("[bold cyan]📝 摘要", style="cyan")
 
     chunks: list[str] = []
-    summary_client = create_current_async_llm_client()
+    summary_client = create_memory_management_llm_client()
     if summary_client is None:
         raise RuntimeError("No model configured. Please use /models to configure a model first.")
     try:

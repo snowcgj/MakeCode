@@ -1203,7 +1203,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             if result.get("__action") != "choose_recall_model":
                 break
             if model_manager is None:
-                self.console.print("\n[bold red]❌ 模型管理器未初始化，无法选择记忆召回模型。[/bold red]", tui_region=TuiRegion.BACKGROUND)
+                self.console.print("\n[bold red]❌ 模型管理器未初始化，无法选择记忆管理模型。[/bold red]", tui_region=TuiRegion.BACKGROUND)
                 continue
             model_manager._reload_from_disk()
             options = ["使用主模型（同主模型）"] + [model.get_display_text() for model in model_manager.models]
@@ -1248,7 +1248,7 @@ MCP 配置文件位于 `{paths.mcp_config_file()}`。服务名是唯一标识；
             f"  partial_compact_range: {result['partial_compact_min_percent']}%-{result['partial_compact_max_percent']}%\n"
             f"  memory_recall_window_size: {result['memory_recall_window_size']}\n"
             f"  memory_pre_recall: {'开启' if result['memory_pre_recall'] else '关闭'}\n"
-            f"  memory_recall_model: {recall_model_text}",
+            f"  memory_management_model: {recall_model_text}",
             tui_region=TuiRegion.BACKGROUND,
         )
         return True

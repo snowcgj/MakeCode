@@ -4680,11 +4680,11 @@ class MemoryConfigModal(ClosableModalScreen[str | dict[str, Any]]):
                     classes="memory-config-input",
                 )
             yield Label(
-                f"记忆召回模型：{self._values.get('memory_recall_model_display', '同主模型')}",
+                f"记忆管理模型：{self._values.get('memory_recall_model_display', '同主模型')}",
                 id="memory-config-recall-model",
                 classes="memory-config-label",
             )
-            yield Button("选择记忆召回模型", id="memory-config-choose-recall-model", classes="memory-config-button")
+            yield Button("选择记忆管理模型", id="memory-config-choose-recall-model", classes="memory-config-button")
             for field in (
                 "tool_output_compact_tokens",
                 "partial_compact_min_percent",
@@ -4916,7 +4916,7 @@ class RecallModelPickerModal(ClosableModalScreen[str]):
         Binding("enter", "select", "Select", priority=True),
         Binding("q", "cancel", "Cancel", priority=True),
     ]
-    _header_title = "🧠 选择记忆召回模型\nEnter 选择；q 取消。"
+    _header_title = "🧠 选择记忆管理模型\nEnter 选择；q 取消。"
 
     def __init__(self, options: list[str]) -> None:
         super().__init__()

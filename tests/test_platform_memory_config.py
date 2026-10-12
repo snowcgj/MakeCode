@@ -22,7 +22,7 @@ from utils.conversations import ConversationStore
 from utils.llm_client import (
     AsyncChatAPIClient,
     build_llm_result,
-    create_memory_recall_llm_client,
+    create_memory_management_llm_client,
     sanitize_openai_messages,
     strip_native_message_payloads,
 )
@@ -372,28 +372,28 @@ def test_create_current_async_llm_client_returns_fresh_clients():
     assert create_client.call_count == 2
 
 
-def test_create_memory_recall_llm_client_uses_configured_model_and_falls_back():
+def test_create_memory_management_llm_client_uses_configured_model_and_falls_back():
     recall_model = ModelConfig("https://example.com", "key", "recall-model")
     current_model = ModelConfig("https://example.com", "key", "current-model")
 
     mock_manager = Mock()
     mock_manager.get_memory_recall_model.return_value = recall_model
     with patch("utils.llm_client.get_model_manager", return_value=mock_manager):
-        client = create_memory_recall_llm_client()
+        client = create_memory_management_llm_client()
     assert client.model == "recall-model"
 
     mock_manager2 = Mock()
     mock_manager2.get_memory_recall_model.return_value = None
     mock_manager2.get_current_model.return_value = current_model
     with patch("utils.llm_client.get_model_manager", return_value=mock_manager2):
-        fallback_client = create_memory_recall_llm_client()
+        fallback_client = create_memory_management_llm_client()
     assert fallback_client.model == "current-model"
 
     mock_manager3 = Mock()
     mock_manager3.get_memory_recall_model.return_value = None
     mock_manager3.get_current_model.return_value = None
     with patch("utils.llm_client.get_model_manager", return_value=mock_manager3):
-        assert create_memory_recall_llm_client() is None
+        assert create_memory_management_llm_client() is None
 
 
 @pytest.mark.anyio
@@ -401,7 +401,7 @@ async def test_select_relevant_memory_ids_uses_dedicated_recall_client():
     recall_client = FakeRecallClient()
 
     with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-            patch.object(memory, "create_memory_recall_llm_client", return_value=recall_client):
+            patch.object(memory, "create_memory_management_llm_client", return_value=recall_client):
         selected = await memory.select_relevant_memory_ids("query")
 
     assert selected == ["mem_a"]
@@ -3833,7 +3833,7 @@ async def test_partial_compact_memory_extraction_uses_full_conversation_context(
     fake_client.get_summary_stream_events.return_value = object()
 
     with patch.object(memory, "_select_partial_compaction_range", return_value=(1, 5)), \
-            patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+            patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
             patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
             patch.object(memory, "_compact_console"), \
             patch.object(
@@ -4180,7 +4180,7 @@ async def test_summary_request_uses_plain_text_compaction_context():
     fake_client = Mock()
     fake_client.get_summary_stream_events.return_value = object()
 
-    with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+    with patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
             patch.object(memory, "close_async_llm_client", new_callable=AsyncMock), \
             patch.object(memory, "_compact_console"), \
             patch.object(
@@ -4216,7 +4216,7 @@ async def test_auto_compact_summary_ignores_private_native_payloads():
     fake_client = Mock()
     fake_client.get_summary_stream_events.return_value = object()
 
-    with patch.object(memory, "create_current_async_llm_client", return_value=fake_client), \
+    with patch.object(memory, "create_memory_management_llm_client", return_value=fake_client), \
             patch.object(memory, "close_async_llm_client", new_callable=AsyncMock) as close_client, \
             patch.object(memory, "_compact_console"), \
             patch.object(
@@ -4877,7 +4877,7 @@ async def test_select_relevant_memory_ids_closes_temporary_recall_client():
     recall_client.client = Mock()
 
     with patch.object(memory, "list_long_term_memories", return_value=MEMORY_RECORDS), \
-            patch.object(memory, "create_memory_recall_llm_client", return_value=recall_client):
+            patch.object(memory, "create_memory_management_llm_client", return_value=recall_client):
         selected = await memory.select_relevant_memory_ids("query")
 
     assert selected == ["mem_a"]

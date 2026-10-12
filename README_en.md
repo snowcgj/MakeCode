@@ -222,7 +222,7 @@ the skills catalog is no longer appended to orchestrator/sub-agent system prompt
 - `/memory-list`: list current active long-term memories.
 - `/memory-panel`: open the long-term memory panel for viewing, copying, and management.
 - `/memory-delete`: delete one or more long-term memories by ID.
-- `/memory-config`: open the memory configuration panel to edit the global context length, `memory_size`, `keep_recent_tool_call`, recall window, and recall model.
+- `/memory-config`: open the memory configuration panel to edit the global context length, `memory_size`, `keep_recent_tool_call`, recall window, and memory management model.
 - `/memory-update [prompt]`: proactively add, refine, or remove long-term memories from an explicit user request; the prompt is optional — when omitted, the system infers from the current conversation transcript.
 
 #### Streaming Summary Generation
@@ -882,7 +882,7 @@ In the interactive CLI, you can type `/` to trigger quick commands (with auto-co
 | `/memory-list`       | List current active long-term memories                                                                                                           |
 | `/memory-panel`      | Open the long-term memory panel (sorted by `updated_at` ascending)                                                                               |
 | `/memory-delete`     | Delete one or more long-term memories by ID                                                                                                       |
-| `/memory-config`     | Open memory configuration to edit global context length, memory size, retained tool calls, recall window, and recall model                       |
+| `/memory-config`     | Open memory configuration to edit global context length, memory size, retained tool calls, recall window, and memory management model                       |
 | `/memory-update [prompt]` | Proactively add, refine, or remove long-term memories; prompt is optional                                                                  |
 | `/hitl`               | Toggle Human-in-the-Loop interception status (On/Off)                                                                                            |
 | `/sub-agent-console`  | Toggle Sub-Agent console output status, disabled by default                                                                                      |

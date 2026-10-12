@@ -1763,17 +1763,17 @@ def create_current_async_llm_client(conversation_root: Path | None = None):
     return _create_async_chat_client(current_model, conversation_root=conversation_root)
 
 
-def create_memory_recall_llm_client():
+def create_memory_management_llm_client(conversation_root: Path | None = None):
     manager = get_model_manager()
     if manager is None:
         return None
-    recall_model = manager.get_memory_recall_model()
-    if recall_model is None:
+    memory_model = manager.get_memory_recall_model()
+    if memory_model is None:
         current_model = manager.get_current_model()
         if current_model is None:
             return None
-        return _create_async_chat_client(current_model)
-    return _create_async_chat_client(recall_model)
+        return _create_async_chat_client(current_model, conversation_root=conversation_root)
+    return _create_async_chat_client(memory_model, conversation_root=conversation_root)
 
 
 def create_image_understanding_llm_client(conversation_root: Path | None = None):
